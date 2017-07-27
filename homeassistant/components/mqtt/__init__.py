@@ -9,6 +9,8 @@ import logging
 import os
 import socket
 import time
+import ssl
+import re
 import requests.certs
 
 import voluptuous as vol
@@ -17,6 +19,7 @@ from homeassistant.core import callback
 from homeassistant.setup import async_prepare_setup_platform
 from homeassistant.config import load_yaml_config_file
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.loader import bind_hass
 from homeassistant.helpers import template, config_validation as cv
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect, dispatcher_send)
@@ -27,6 +30,8 @@ from homeassistant.const import (
     CONF_PASSWORD, CONF_PORT, CONF_PROTOCOL, CONF_PAYLOAD)
 from homeassistant.components.mqtt.server import HBMQTT_CONFIG_SCHEMA
 
+REQUIREMENTS = ['paho-mqtt==1.3.0']
+
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = 'mqtt'
@@ -35,8 +40,6 @@ DATA_MQTT = 'mqtt'
 
 SERVICE_PUBLISH = 'publish'
 SIGNAL_MQTT_MESSAGE_RECEIVED = 'mqtt_message_received'
-
-REQUIREMENTS = ['paho-mqtt==1.2']
 
 CONF_EMBEDDED = 'embedded'
 CONF_BROKER = 'broker'
@@ -48,12 +51,14 @@ CONF_CERTIFICATE = 'certificate'
 CONF_CLIENT_KEY = 'client_key'
 CONF_CLIENT_CERT = 'client_cert'
 CONF_TLS_INSECURE = 'tls_insecure'
+CONF_TLS_VERSION = 'tls_version'
 
 CONF_BIRTH_MESSAGE = 'birth_message'
 CONF_WILL_MESSAGE = 'will_message'
 
 CONF_STATE_TOPIC = 'state_topic'
 CONF_COMMAND_TOPIC = 'command_topic'
+CONF_AVAILABILITY_TOPIC = 'availability_topic'
 CONF_QOS = 'qos'
 CONF_RETAIN = 'retain'
 
@@ -67,6 +72,7 @@ DEFAULT_RETAIN = False
 DEFAULT_PROTOCOL = PROTOCOL_311
 DEFAULT_DISCOVERY = False
 DEFAULT_DISCOVERY_PREFIX = 'homeassistant'
+DEFAULT_TLS_PROTOCOL = 'auto'
 
 ATTR_TOPIC = 'topic'
 ATTR_PAYLOAD = 'payload'
@@ -98,7 +104,7 @@ def valid_discovery_topic(value):
 _VALID_QOS_SCHEMA = vol.All(vol.Coerce(int), vol.In([0, 1, 2]))
 
 CLIENT_KEY_AUTH_MSG = 'client_key and client_cert must both be present in ' \
-                      'the mqtt broker config'
+                      'the MQTT broker configuration'
 
 MQTT_WILL_BIRTH_SCHEMA = vol.Schema({
     vol.Required(ATTR_TOPIC): valid_publish_topic,
@@ -116,12 +122,14 @@ CONFIG_SCHEMA = vol.Schema({
         vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
         vol.Optional(CONF_USERNAME): cv.string,
         vol.Optional(CONF_PASSWORD): cv.string,
-        vol.Optional(CONF_CERTIFICATE): cv.isfile,
+        vol.Optional(CONF_CERTIFICATE): vol.Any('auto', cv.isfile),
         vol.Inclusive(CONF_CLIENT_KEY, 'client_key_auth',
                       msg=CLIENT_KEY_AUTH_MSG): cv.isfile,
         vol.Inclusive(CONF_CLIENT_CERT, 'client_key_auth',
                       msg=CLIENT_KEY_AUTH_MSG): cv.isfile,
         vol.Optional(CONF_TLS_INSECURE): cv.boolean,
+        vol.Optional(CONF_TLS_VERSION, default=DEFAULT_TLS_PROTOCOL):
+            vol.Any('auto', '1.0', '1.1', '1.2'),
         vol.Optional(CONF_PROTOCOL, default=DEFAULT_PROTOCOL):
             vol.All(cv.string, vol.In([PROTOCOL_31, PROTOCOL_311])),
         vol.Optional(CONF_EMBEDDED): HBMQTT_CONFIG_SCHEMA,
@@ -174,12 +182,14 @@ def _build_publish_data(topic, qos, retain):
     return data
 
 
+@bind_hass
 def publish(hass, topic, payload, qos=None, retain=None):
     """Publish message to an MQTT topic."""
     hass.add_job(async_publish, hass, topic, payload, qos, retain)
 
 
 @callback
+@bind_hass
 def async_publish(hass, topic, payload, qos=None, retain=None):
     """Publish message to an MQTT topic."""
     data = _build_publish_data(topic, qos, retain)
@@ -187,6 +197,7 @@ def async_publish(hass, topic, payload, qos=None, retain=None):
     hass.async_add_job(hass.services.async_call(DOMAIN, SERVICE_PUBLISH, data))
 
 
+@bind_hass
 def publish_template(hass, topic, payload_template, qos=None, retain=None):
     """Publish message to an MQTT topic using a template payload."""
     data = _build_publish_data(topic, qos, retain)
@@ -195,7 +206,9 @@ def publish_template(hass, topic, payload_template, qos=None, retain=None):
 
 
 @asyncio.coroutine
-def async_subscribe(hass, topic, msg_callback, qos=DEFAULT_QOS):
+@bind_hass
+def async_subscribe(hass, topic, msg_callback, qos=DEFAULT_QOS,
+                    encoding='utf-8'):
     """Subscribe to an MQTT topic."""
     @callback
     def async_mqtt_topic_subscriber(dp_topic, dp_payload, dp_qos):
@@ -203,7 +216,20 @@ def async_subscribe(hass, topic, msg_callback, qos=DEFAULT_QOS):
         if not _match_topic(topic, dp_topic):
             return
 
-        hass.async_run_job(msg_callback, dp_topic, dp_payload, dp_qos)
+        if encoding is not None:
+            try:
+                payload = dp_payload.decode(encoding)
+                _LOGGER.debug("Received message on %s: %s", dp_topic, payload)
+            except (AttributeError, UnicodeDecodeError):
+                _LOGGER.error("Illegal payload encoding %s from "
+                              "MQTT topic: %s, Payload: %s",
+                              encoding, dp_topic, dp_payload)
+                return
+        else:
+            _LOGGER.debug("Received binary message on %s", dp_topic)
+            payload = dp_payload
+
+        hass.async_run_job(msg_callback, dp_topic, payload, dp_qos)
 
     async_remove = async_dispatcher_connect(
         hass, SIGNAL_MQTT_MESSAGE_RECEIVED, async_mqtt_topic_subscriber)
@@ -212,11 +238,12 @@ def async_subscribe(hass, topic, msg_callback, qos=DEFAULT_QOS):
     return async_remove
 
 
-def subscribe(hass, topic, msg_callback, qos=DEFAULT_QOS):
+@bind_hass
+def subscribe(hass, topic, msg_callback, qos=DEFAULT_QOS,
+              encoding='utf-8'):
     """Subscribe to an MQTT topic."""
     async_remove = run_coroutine_threadsafe(
-        async_subscribe(hass, topic, msg_callback, qos),
-        hass.loop
+        async_subscribe(hass, topic, msg_callback, qos, encoding), hass.loop
     ).result()
 
     def remove():
@@ -271,7 +298,10 @@ def _async_setup_discovery(hass, config):
 @asyncio.coroutine
 def async_setup(hass, config):
     """Start the MQTT protocol service."""
-    conf = config.get(DOMAIN, {})
+    conf = config.get(DOMAIN)
+
+    if conf is None:
+        conf = CONFIG_SCHEMA({DOMAIN: {}})[DOMAIN]
 
     client_id = conf.get(CONF_CLIENT_ID)
     keepalive = conf.get(CONF_KEEPALIVE)
@@ -297,6 +327,9 @@ def async_setup(hass, config):
         broker, port, username, password, certificate, protocol = broker_config
         # Embedded broker doesn't have some ssl variables
         client_key, client_cert, tls_insecure = None, None, None
+        # hbmqtt requires a client id to be set.
+        if client_id is None:
+            client_id = 'home-assistant'
     else:
         err = "Unable to start MQTT broker."
         if conf.get(CONF_EMBEDDED) is not None:
@@ -311,18 +344,34 @@ def async_setup(hass, config):
         certificate = os.path.join(os.path.dirname(__file__),
                                    'addtrustexternalcaroot.crt')
 
-    # When the port indicates mqtts, use bundled certificates from requests
-    if certificate is None and port == 8883:
+    # When the certificate is set to auto, use bundled certs from requests
+    if certificate == 'auto':
         certificate = requests.certs.where()
 
     will_message = conf.get(CONF_WILL_MESSAGE)
     birth_message = conf.get(CONF_BIRTH_MESSAGE)
 
+    # Be able to override versions other than TLSv1.0 under Python3.6
+    conf_tls_version = conf.get(CONF_TLS_VERSION)
+    if conf_tls_version == '1.2':
+        tls_version = ssl.PROTOCOL_TLSv1_2
+    elif conf_tls_version == '1.1':
+        tls_version = ssl.PROTOCOL_TLSv1_1
+    elif conf_tls_version == '1.0':
+        tls_version = ssl.PROTOCOL_TLSv1
+    else:
+        import sys
+        # Python3.6 supports automatic negotiation of highest TLS version
+        if sys.hexversion >= 0x03060000:
+            tls_version = ssl.PROTOCOL_TLS  # pylint: disable=no-member
+        else:
+            tls_version = ssl.PROTOCOL_TLSv1
+
     try:
         hass.data[DATA_MQTT] = MQTT(
             hass, broker, port, client_id, keepalive, username, password,
             certificate, client_key, client_cert, tls_insecure, protocol,
-            will_message, birth_message)
+            will_message, birth_message, tls_version)
     except socket.error:
         _LOGGER.exception("Can't connect to the broker. "
                           "Please check your settings and the broker itself")
@@ -347,22 +396,22 @@ def async_setup(hass, config):
         payload_template = call.data.get(ATTR_PAYLOAD_TEMPLATE)
         qos = call.data[ATTR_QOS]
         retain = call.data[ATTR_RETAIN]
-        try:
-            if payload_template is not None:
+        if payload_template is not None:
+            try:
                 payload = \
                     template.Template(payload_template, hass).async_render()
-        except template.jinja2.TemplateError as exc:
-            _LOGGER.error(
-                "Unable to publish to '%s': rendering payload template of "
-                "'%s' failed because %s",
-                msg_topic, payload_template, exc)
-            return
+            except template.jinja2.TemplateError as exc:
+                _LOGGER.error(
+                    "Unable to publish to '%s': rendering payload template of "
+                    "'%s' failed because %s",
+                    msg_topic, payload_template, exc)
+                return
 
         yield from hass.data[DATA_MQTT].async_publish(
             msg_topic, payload, qos, retain)
 
-    descriptions = yield from hass.loop.run_in_executor(
-        None, load_yaml_config_file, os.path.join(
+    descriptions = yield from hass.async_add_job(
+        load_yaml_config_file, os.path.join(
             os.path.dirname(__file__), 'services.yaml'))
 
     hass.services.async_register(
@@ -380,7 +429,8 @@ class MQTT(object):
 
     def __init__(self, hass, broker, port, client_id, keepalive, username,
                  password, certificate, client_key, client_cert,
-                 tls_insecure, protocol, will_message, birth_message):
+                 tls_insecure, protocol, will_message, birth_message,
+                 tls_version):
         """Initialize Home Assistant MQTT client."""
         import paho.mqtt.client as mqtt
 
@@ -409,10 +459,11 @@ class MQTT(object):
 
         if certificate is not None:
             self._mqttc.tls_set(
-                certificate, certfile=client_cert, keyfile=client_key)
+                certificate, certfile=client_cert,
+                keyfile=client_key, tls_version=tls_version)
 
-        if tls_insecure is not None:
-            self._mqttc.tls_insecure_set(tls_insecure)
+            if tls_insecure is not None:
+                self._mqttc.tls_insecure_set(tls_insecure)
 
         self._mqttc.on_subscribe = self._mqtt_on_subscribe
         self._mqttc.on_unsubscribe = self._mqtt_on_unsubscribe
@@ -433,8 +484,8 @@ class MQTT(object):
         This method must be run in the event loop and returns a coroutine.
         """
         with (yield from self._paho_lock):
-            yield from self.hass.loop.run_in_executor(
-                None, self._mqttc.publish, topic, payload, qos, retain)
+            yield from self.hass.async_add_job(
+                self._mqttc.publish, topic, payload, qos, retain)
 
     @asyncio.coroutine
     def async_connect(self):
@@ -442,8 +493,8 @@ class MQTT(object):
 
         This method is a coroutine.
         """
-        result = yield from self.hass.loop.run_in_executor(
-            None, self._mqttc.connect, self.broker, self.port, self.keepalive)
+        result = yield from self.hass.async_add_job(
+            self._mqttc.connect, self.broker, self.port, self.keepalive)
 
         if result != 0:
             import paho.mqtt.client as mqtt
@@ -463,7 +514,7 @@ class MQTT(object):
             self._mqttc.disconnect()
             self._mqttc.loop_stop()
 
-        return self.hass.loop.run_in_executor(None, stop)
+        return self.hass.async_add_job(stop)
 
     @asyncio.coroutine
     def async_subscribe(self, topic, qos):
@@ -478,8 +529,8 @@ class MQTT(object):
             if topic in self.topics:
                 return
 
-            result, mid = yield from self.hass.loop.run_in_executor(
-                None, self._mqttc.subscribe, topic, qos)
+            result, mid = yield from self.hass.async_add_job(
+                self._mqttc.subscribe, topic, qos)
 
             _raise_on_error(result)
             self.progress[mid] = topic
@@ -491,8 +542,8 @@ class MQTT(object):
 
         This method is a coroutine.
         """
-        result, mid = yield from self.hass.loop.run_in_executor(
-            None, self._mqttc.unsubscribe, topic)
+        result, mid = yield from self.hass.async_add_job(
+            self._mqttc.unsubscribe, topic)
 
         _raise_on_error(result)
         self.progress[mid] = topic
@@ -537,18 +588,10 @@ class MQTT(object):
 
     def _mqtt_on_message(self, _mqttc, _userdata, msg):
         """Message received callback."""
-        try:
-            payload = msg.payload.decode('utf-8')
-        except (AttributeError, UnicodeDecodeError):
-            _LOGGER.error("Illegal utf-8 unicode payload from "
-                          "MQTT topic: %s, Payload: %s", msg.topic,
-                          msg.payload)
-        else:
-            _LOGGER.info("Received message on %s: %s", msg.topic, payload)
-            dispatcher_send(
-                self.hass, SIGNAL_MQTT_MESSAGE_RECEIVED, msg.topic, payload,
-                msg.qos
-            )
+        dispatcher_send(
+            self.hass, SIGNAL_MQTT_MESSAGE_RECEIVED, msg.topic, msg.payload,
+            msg.qos
+        )
 
     def _mqtt_on_unsubscribe(self, _mqttc, _userdata, mid, granted_qos):
         """Unsubscribe successful callback."""
@@ -603,12 +646,20 @@ def _raise_on_error(result):
 
 def _match_topic(subscription, topic):
     """Test if topic matches subscription."""
+    reg_ex_parts = []
+    suffix = ""
     if subscription.endswith('#'):
-        return (subscription[:-2] == topic or
-                topic.startswith(subscription[:-1]))
-
+        subscription = subscription[:-2]
+        suffix = "(.*)"
     sub_parts = subscription.split('/')
-    topic_parts = topic.split('/')
+    for sub_part in sub_parts:
+        if sub_part == "+":
+            reg_ex_parts.append(r"([^\/]+)")
+        else:
+            reg_ex_parts.append(re.escape(sub_part))
 
-    return (len(sub_parts) == len(topic_parts) and
-            all(a == b for a, b in zip(sub_parts, topic_parts) if a != '+'))
+    reg_ex = "^" + (r'\/'.join(reg_ex_parts)) + suffix + "$"
+
+    reg = re.compile(reg_ex)
+
+    return reg.match(topic) is not None

@@ -36,7 +36,7 @@ IGNORE_DOMAINS = ('zone', 'scene',)
 
 
 def last_recorder_run(hass):
-    """Retireve the last closed recorder run from the DB."""
+    """Retrieve the last closed recorder run from the database."""
     from homeassistant.components.recorder.models import RecorderRuns
 
     with session_scope(hass=hass) as session:
@@ -119,19 +119,42 @@ def get_states(hass, utc_point_in_time, entity_ids=None, run=None,
     from sqlalchemy import and_, func
 
     with session_scope(hass=hass) as session:
-        most_recent_state_ids = session.query(
-            func.max(States.state_id).label('max_state_id')
-        ).filter(
-            (States.created >= run.start) &
-            (States.created < utc_point_in_time) &
-            (~States.domain.in_(IGNORE_DOMAINS)))
+        if entity_ids and len(entity_ids) == 1:
+            # Use an entirely different (and extremely fast) query if we only
+            # have a single entity id
+            most_recent_state_ids = session.query(
+                States.state_id.label('max_state_id')
+            ).filter(
+                (States.created < utc_point_in_time) &
+                (States.entity_id.in_(entity_ids))
+            ).order_by(
+                States.created.desc())
 
-        if filters:
-            most_recent_state_ids = filters.apply(most_recent_state_ids,
-                                                  entity_ids)
+            if filters:
+                most_recent_state_ids = filters.apply(most_recent_state_ids,
+                                                      entity_ids)
 
-        most_recent_state_ids = most_recent_state_ids.group_by(
-            States.entity_id).subquery()
+            most_recent_state_ids = most_recent_state_ids.limit(1)
+
+        else:
+            # We have more than one entity to look at (most commonly we want
+            # all entities,) so we need to do a search on all states since the
+            # last recorder run started.
+            most_recent_state_ids = session.query(
+                func.max(States.state_id).label('max_state_id')
+            ).filter(
+                (States.created >= run.start) &
+                (States.created < utc_point_in_time) &
+                (~States.domain.in_(IGNORE_DOMAINS)))
+
+            if filters:
+                most_recent_state_ids = filters.apply(most_recent_state_ids,
+                                                      entity_ids)
+
+            most_recent_state_ids = most_recent_state_ids.group_by(
+                States.entity_id)
+
+        most_recent_state_ids = most_recent_state_ids.subquery()
 
         query = session.query(States).join(most_recent_state_ids, and_(
             States.state_id == most_recent_state_ids.c.max_state_id))
@@ -161,8 +184,8 @@ def states_to_json(hass, states, start_time, entity_id, filters=None):
         result[state.entity_id].append(state)
 
     # Append all changes to it
-    for entity_id, group in groupby(states, lambda state: state.entity_id):
-        result[entity_id].extend(group)
+    for ent_id, group in groupby(states, lambda state: state.entity_id):
+        result[ent_id].extend(group)
     return result
 
 
@@ -174,7 +197,7 @@ def get_state(hass, utc_point_in_time, entity_id, run=None):
 
 # pylint: disable=unused-argument
 def setup(hass, config):
-    """Setup the history hooks."""
+    """Set up the history hooks."""
     filters = Filters()
     exclude = config[DOMAIN].get(CONF_EXCLUDE)
     if exclude:
@@ -223,7 +246,7 @@ class HistoryPeriodView(HomeAssistantView):
         if start_time > now:
             return self.json([])
 
-        end_time = request.GET.get('end_time')
+        end_time = request.query.get('end_time')
         if end_time:
             end_time = dt_util.as_utc(
                 dt_util.parse_datetime(end_time))
@@ -231,11 +254,11 @@ class HistoryPeriodView(HomeAssistantView):
                 return self.json_message('Invalid end_time', HTTP_BAD_REQUEST)
         else:
             end_time = start_time + one_day
-        entity_id = request.GET.get('filter_entity_id')
+        entity_id = request.query.get('filter_entity_id')
 
-        result = yield from request.app['hass'].loop.run_in_executor(
-            None, get_significant_states, request.app['hass'], start_time,
-            end_time, entity_id, self.filters)
+        result = yield from request.app['hass'].async_add_job(
+            get_significant_states, request.app['hass'], start_time, end_time,
+            entity_id, self.filters)
         result = result.values()
         if _LOGGER.isEnabledFor(logging.DEBUG):
             elapsed = time.perf_counter() - timer_start

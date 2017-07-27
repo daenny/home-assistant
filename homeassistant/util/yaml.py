@@ -12,6 +12,11 @@ try:
 except ImportError:
     keyring = None
 
+try:
+    import credstash
+except ImportError:
+    credstash = None
+
 from homeassistant.exceptions import HomeAssistantError
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,18 +25,20 @@ _SECRET_YAML = 'secrets.yaml'
 __SECRET_CACHE = {}  # type: Dict
 
 
+class NodeListClass(list):
+    """Wrapper class to be able to add attributes on a list."""
+
+    pass
+
+
+class NodeStrClass(str):
+    """Wrapper class to be able to add attributes on a string."""
+
+    pass
+
+
 def _add_reference(obj, loader, node):
     """Add file reference information to an object."""
-    class NodeListClass(list):
-        """Wrapper class to be able to add attributes on a list."""
-
-        pass
-
-    class NodeStrClass(str):
-        """Wrapper class to be able to add attributes on a string."""
-
-        pass
-
     if isinstance(obj, list):
         obj = NodeListClass(obj)
     if isinstance(obj, str):
@@ -65,12 +72,12 @@ def load_yaml(fname: str) -> Union[List, Dict]:
         _LOGGER.error(exc)
         raise HomeAssistantError(exc)
     except UnicodeDecodeError as exc:
-        _LOGGER.error('Unable to read file %s: %s', fname, exc)
+        _LOGGER.error("Unable to read file %s: %s", fname, exc)
         raise HomeAssistantError(exc)
 
 
 def dump(_dict: dict) -> str:
-    """Dump yaml to a string and remove null."""
+    """Dump YAML to a string and remove null."""
     return yaml.safe_dump(_dict, default_flow_style=False) \
         .replace(': null\n', ':\n')
 
@@ -198,8 +205,13 @@ def _construct_seq(loader: SafeLineLoader, node: yaml.nodes.Node):
 def _env_var_yaml(loader: SafeLineLoader,
                   node: yaml.nodes.Node):
     """Load environment variables and embed it into the configuration YAML."""
-    if node.value in os.environ:
-        return os.environ[node.value]
+    args = node.value.split()
+
+    # Check for a default value
+    if len(args) > 1:
+        return os.getenv(args[0], ' '.join(args[1:]))
+    elif args[0] in os.environ:
+        return os.environ[args[0]]
     else:
         _LOGGER.error("Environment variable %s not defined.", node.value)
         raise HomeAssistantError(node.value)
@@ -237,8 +249,8 @@ def _secret_yaml(loader: SafeLineLoader,
         secrets = _load_secret_yaml(secret_path)
 
         if node.value in secrets:
-            _LOGGER.debug('Secret %s retrieved from secrets.yaml in '
-                          'folder %s', node.value, secret_path)
+            _LOGGER.debug("Secret %s retrieved from secrets.yaml in "
+                          "folder %s", node.value, secret_path)
             return secrets[node.value]
 
         if secret_path == os.path.dirname(sys.path[0]):
@@ -252,10 +264,19 @@ def _secret_yaml(loader: SafeLineLoader,
         # do some keyring stuff
         pwd = keyring.get_password(_SECRET_NAMESPACE, node.value)
         if pwd:
-            _LOGGER.debug('Secret %s retrieved from keyring.', node.value)
+            _LOGGER.debug("Secret %s retrieved from keyring", node.value)
             return pwd
 
-    _LOGGER.error('Secret %s not defined.', node.value)
+    if credstash:
+        try:
+            pwd = credstash.getSecret(node.value, table=_SECRET_NAMESPACE)
+            if pwd:
+                _LOGGER.debug("Secret %s retrieved from credstash", node.value)
+                return pwd
+        except credstash.ItemNotFound:
+            pass
+
+    _LOGGER.error("Secret %s not defined", node.value)
     raise HomeAssistantError(node.value)
 
 
@@ -305,4 +326,9 @@ def represent_odict(dump, tag, mapping, flow_style=None):
 yaml.SafeDumper.add_representer(
     OrderedDict,
     lambda dumper, value:
-    represent_odict(dumper, u'tag:yaml.org,2002:map', value))
+    represent_odict(dumper, 'tag:yaml.org,2002:map', value))
+
+yaml.SafeDumper.add_representer(
+    NodeListClass,
+    lambda dumper, value:
+    dumper.represent_sequence('tag:yaml.org,2002:seq', value))

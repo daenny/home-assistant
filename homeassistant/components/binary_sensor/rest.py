@@ -44,7 +44,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Setup the REST binary sensor."""
+    """Set up the REST binary sensor."""
     name = config.get(CONF_NAME)
     resource = config.get(CONF_RESOURCE)
     method = config.get(CONF_METHOD)
@@ -107,6 +107,8 @@ class RestBinarySensor(BinarySensorDevice):
         if self.rest.data is None:
             return False
 
+        response = self.rest.data
+
         if self._value_template is not None:
             response = self._value_template.\
                 async_render_with_possible_json_value(self.rest.data, False)
@@ -114,8 +116,8 @@ class RestBinarySensor(BinarySensorDevice):
         try:
             return bool(int(response))
         except ValueError:
-            return {"true": True, "on": True, "open": True,
-                    "yes": True}.get(response.lower(), False)
+            return {'true': True, 'on': True, 'open': True,
+                    'yes': True}.get(response.lower(), False)
 
     def update(self):
         """Get the latest data from REST API and updates the state."""

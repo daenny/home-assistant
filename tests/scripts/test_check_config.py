@@ -68,7 +68,7 @@ class TestCheckConfig(unittest.TestCase):
             res = check_config.check(get_test_config_dir('light.yaml'))
             change_yaml_files(res)
             self.assertDictEqual({
-                'components': {'light': [{'platform': 'demo'}]},
+                'components': {'light': [{'platform': 'demo'}], 'group': None},
                 'except': {},
                 'secret_cache': {},
                 'secrets': {},
@@ -108,8 +108,10 @@ class TestCheckConfig(unittest.TestCase):
                     'protocol': '3.1.1',
                     'discovery': False,
                     'discovery_prefix': 'homeassistant',
+                    'tls_version': 'auto',
                 },
-                 'light': []},
+                 'light': [],
+                 'group': None},
                 res['components']
             )
             self.assertDictEqual(
@@ -141,7 +143,7 @@ class TestCheckConfig(unittest.TestCase):
 
             res = check_config.check(get_test_config_dir('badplatform.yaml'))
             change_yaml_files(res)
-            assert res['components'] == {'light': []}
+            assert res['components'] == {'light': [], 'group': None}
             assert res['except'] == {
                 check_config.ERROR_STR: [
                     'Platform not found: light.beer',
