@@ -79,7 +79,7 @@ def get_scanner(hass, config):
     return scanner if scanner.success_init else None
 
 
-AsusWrtResult = namedtuple('AsusWrtResult', 'neighbors leases')
+AsusWrtResult = namedtuple('AsusWrtResult', 'neighbors dns_leases wl_assoc')
 
 
 class AsusWrtDeviceScanner(DeviceScanner):
@@ -154,7 +154,7 @@ class AsusWrtDeviceScanner(DeviceScanner):
         active_clients = [client for client in data.values() if
                           client['status'] == 'REACHABLE' or
                           client['status'] == 'DELAY' or
-                          client['status'] == 'STALE' or
+                          #client['status'] == 'STALE' or
                           client['status'] == 'IN_ASSOCLIST']
         self.last_results = active_clients
         return True
@@ -167,25 +167,24 @@ class AsusWrtDeviceScanner(DeviceScanner):
             return {}
 
         devices = {}
-        if self.mode == 'ap':
-            for lease in result.leases:
-                match = _WL_REGEX.search(lease.decode('utf-8'))
+        for lease in result.wl_assoc:
+            match = _WL_REGEX.search(lease.decode('utf-8'))
 
-                if not match:
-                    _LOGGER.warning("Could not parse wl row: %s", lease)
-                    continue
+            if not match:
+                _LOGGER.warning("Could not parse wl row: %s", lease)
+                continue
 
-                host = ''
+            host = ''
 
-                devices[match.group('mac').upper()] = {
-                    'host': host,
-                    'status': 'IN_ASSOCLIST',
-                    'ip': '',
-                    'mac': match.group('mac').upper(),
-                    }
+            devices[match.group('mac').upper()] = {
+                'host': host,
+                'status': 'IN_ASSOCLIST',
+                'ip': '',
+                'mac': match.group('mac').upper(),
+                }
 
-        else:
-            for lease in result.leases:
+        if not self.mode == 'ap':
+            for lease in result.dns_leases:
                 if lease.startswith(b'duid '):
                     continue
                 match = _LEASES_REGEX.search(lease.decode('utf-8'))
@@ -200,11 +199,16 @@ class AsusWrtDeviceScanner(DeviceScanner):
                 if host == '*':
                     host = ''
 
-                devices[match.group('mac')] = {
-                    'host': host,
-                    'status': '',
-                    'ip': match.group('ip'),
-                    'mac': match.group('mac').upper(),
+                if match.group('mac').upper() in devices:
+                    # only update hostname and ip
+                    devices[match.group('mac').upper()]['host'] = host
+                    devices[match.group('mac').upper()]['ip'] =  match.group('ip')
+                else:
+                    devices[match.group('mac').upper()] = {
+                        'host': host,
+                        'status': '',
+                        'ip': match.group('ip'),
+                        'mac': match.group('mac').upper(),
                     }
 
             for neighbor in result.neighbors:
@@ -213,10 +217,17 @@ class AsusWrtDeviceScanner(DeviceScanner):
                     _LOGGER.warning("Could not parse neighbor row: %s",
                                     neighbor)
                     continue
-                if match.group('mac') in devices:
-                    devices[match.group('mac')]['status'] = (
-                        match.group('status'))
-
+                if match.group('mac') is None:
+                    _LOGGER.warning("Could not parse neighbor row: %s",
+                                    neighbor)
+                    continue
+                if match.group('mac').upper() in devices:
+                    if devices[match.group('mac').upper()]['status'] == '':
+                        devices[match.group('mac').upper()]['status'] = (
+                            match.group('status'))
+        # for d in devices:
+        #     print(d)
+        #     print(devices[d]['status'])
         return devices
 
 
@@ -264,19 +275,21 @@ class SshConnection(_Connection):
         try:
             if not self.connected:
                 self.connect()
-            if self._ap:
-                neighbors = ['']
-                self._ssh.sendline(_WL_CMD)
-                self._ssh.prompt()
-                leases_result = self._ssh.before.split(b'\n')[1:-1]
-            else:
-                self._ssh.sendline(_IP_NEIGH_CMD)
-                self._ssh.prompt()
-                neighbors = self._ssh.before.split(b'\n')[1:-1]
+            self._ssh.sendline(_IP_NEIGH_CMD)
+            self._ssh.prompt()
+            neighbors = self._ssh.before.split(b'\n')[1:-1]
+
+            self._ssh.sendline(_WL_CMD)
+            self._ssh.prompt()
+            wl_assoc = self._ssh.before.split(b'\n')[1:-1]
+
+            leases_result = ['']
+
+            if not self._ap:
                 self._ssh.sendline(_LEASES_CMD)
                 self._ssh.prompt()
                 leases_result = self._ssh.before.split(b'\n')[1:-1]
-            return AsusWrtResult(neighbors, leases_result)
+            return AsusWrtResult(neighbors, leases_result, wl_assoc)
         except exceptions.EOF as err:
             _LOGGER.error("Connection refused. SSH enabled?")
             self.disconnect()
@@ -345,15 +358,18 @@ class TelnetConnection(_Connection):
             self._telnet.write('{}\n'.format(_IP_NEIGH_CMD).encode('ascii'))
             neighbors = (self._telnet.read_until(self._prompt_string).
                          split(b'\n')[1:-1])
-            if self._ap:
-                self._telnet.write('{}\n'.format(_WL_CMD).encode('ascii'))
-                leases_result = (self._telnet.read_until(self._prompt_string).
-                                 split(b'\n')[1:-1])
-            else:
+
+            self._telnet.write('{}\n'.format(_WL_CMD).encode('ascii'))
+            wl_assoc = (self._telnet.read_until(self._prompt_string).
+                        split(b'\n')[1:-1])
+            leases_result = ['']
+
+            if not self._ap:
                 self._telnet.write('{}\n'.format(_LEASES_CMD).encode('ascii'))
                 leases_result = (self._telnet.read_until(self._prompt_string).
                                  split(b'\n')[1:-1])
-            return AsusWrtResult(neighbors, leases_result)
+
+            return AsusWrtResult(neighbors, leases_result, wl_assoc)
         except EOFError:
             _LOGGER.error("Unexpected response from router")
             self.disconnect()
