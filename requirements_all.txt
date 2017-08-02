@@ -124,7 +124,7 @@ broadlink==0.5
 
 # homeassistant.components.sensor.buienradar
 # homeassistant.components.weather.buienradar
-buienradar==0.7
+buienradar==0.8
 
 # homeassistant.components.notify.ciscospark
 ciscosparkapi==0.4.2
@@ -315,9 +315,6 @@ https://github.com/robbiet480/pygtfs/archive/00546724e4bbcb3053110d844ca44e22462
 # homeassistant.components.binary_sensor.flic
 https://github.com/soldag/pyflic/archive/0.4.zip#pyflic==0.4
 
-# homeassistant.components.light.osramlightify
-https://github.com/tfriedel/python-lightify/archive/1bb1db0e7bd5b14304d7bb267e2398cd5160df46.zip#lightify==1.0.5
-
 # homeassistant.components.media_player.lg_netcast
 https://github.com/wokar/pylgnetcast/archive/v0.2.0.zip#pylgnetcast==0.2.0
 
@@ -334,7 +331,7 @@ influxdb==3.0.0
 insteonlocal==0.52
 
 # homeassistant.components.insteon_plm
-insteonplm==0.7.4
+insteonplm==0.7.5
 
 # homeassistant.components.verisure
 jsonpath==0.75
@@ -366,6 +363,9 @@ libsoundtouch==0.7.2
 
 # homeassistant.components.light.lifx_legacy
 liffylights==0.9.4
+
+# homeassistant.components.light.osramlightify
+lightify==1.0.6
 
 # homeassistant.components.light.limitlessled
 limitlessled==1.0.8
@@ -495,7 +495,7 @@ pubnubsub-handler==1.0.2
 
 # homeassistant.components.notify.pushbullet
 # homeassistant.components.sensor.pushbullet
-pushbullet.py==0.10.0
+pushbullet.py==0.11.0
 
 # homeassistant.components.notify.pushetta
 pushetta==1.0.15
@@ -526,10 +526,10 @@ pyalarmdotcom==0.3.0
 pyarlo==0.0.4
 
 # homeassistant.components.notify.xmpp
-pyasn1-modules==0.0.9
+pyasn1-modules==0.0.10
 
 # homeassistant.components.notify.xmpp
-pyasn1==0.2.3
+pyasn1==0.3.1
 
 # homeassistant.components.apple_tv
 pyatv==0.3.4
@@ -577,6 +577,9 @@ pyfido==1.0.1
 # homeassistant.components.climate.flexit
 pyflexit==0.3
 
+# homeassistant.components.camera.foscam
+pyfoscam==1.2
+
 # homeassistant.components.ifttt
 pyfttt==0.3
 
@@ -590,7 +593,7 @@ pyharmony==1.0.16
 pyhik==0.1.3
 
 # homeassistant.components.homematic
-pyhomematic==0.1.29
+pyhomematic==0.1.30
 
 # homeassistant.components.sensor.hydroquebec
 pyhydroquebec==1.2.0
@@ -624,7 +627,7 @@ pylitejet==0.1
 pyloopenergy==0.0.17
 
 # homeassistant.components.lutron_caseta
-pylutron-caseta==0.2.6
+pylutron-caseta==0.2.7
 
 # homeassistant.components.lutron
 pylutron==0.1.0
@@ -684,7 +687,7 @@ pysma==0.1.3
 
 # homeassistant.components.device_tracker.snmp
 # homeassistant.components.sensor.snmp
-pysnmp==4.3.8
+pysnmp==4.3.9
 
 # homeassistant.components.sensor.thinkingcleaner
 # homeassistant.components.switch.thinkingcleaner
@@ -756,7 +759,7 @@ python-synology==0.1.0
 python-tado==0.2.2
 
 # homeassistant.components.telegram_bot
-python-telegram-bot==6.1.0
+python-telegram-bot==7.0.1
 
 # homeassistant.components.sensor.twitch
 python-twitch==1.3.0
@@ -768,7 +771,7 @@ python-velbus==2.0.11
 python-vlc==1.1.2
 
 # homeassistant.components.wink
-python-wink==1.3.1
+python-wink==1.4.2
 
 # homeassistant.components.zwave
 python_openzwave==0.4.0.31
@@ -829,6 +832,9 @@ ring_doorbell==0.1.4
 
 # homeassistant.components.media_player.russound_rnet
 russound==0.1.7
+
+# homeassistant.components.media_player.russound_rio
+russound_rio==0.1.3
 
 # homeassistant.components.media_player.yamaha
 rxv==0.4.0
@@ -962,6 +968,7 @@ xbee-helper==0.0.7
 # homeassistant.components.sensor.xbox_live
 xboxapi==0.1.1
 
+# homeassistant.components.media_player.bluesound
 # homeassistant.components.sensor.swiss_hydrological_data
 # homeassistant.components.sensor.ted5000
 # homeassistant.components.sensor.yr
